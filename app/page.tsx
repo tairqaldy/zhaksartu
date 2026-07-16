@@ -145,6 +145,14 @@ export default function Home() {
   }
 
   async function runEnhance(withEngine: EngineId) {
+    if (
+      output.trim().length > 0 &&
+      !window.confirm(
+        "This replaces the prompt on screen with a new one. (The current one is already saved in history — open the profile panel to find it.) Continue?"
+      )
+    ) {
+      return;
+    }
     setPhase("output");
     setOutput("");
     setCopied(false);
