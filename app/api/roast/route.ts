@@ -1,29 +1,21 @@
-import { getClaudeEngine } from "@/lib/engines";
-import { enhancePrompt, type Answer } from "@/lib/prompts";
+import { getClaudeEngine, type ChatMessage } from "@/lib/engines";
+import { roastSystemPrompt } from "@/lib/prompts";
 import { getProfile } from "@/lib/store";
 import { toSafeTextStream } from "@/lib/stream";
 
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  const { idea, answers, model } = (await request
-    .json()
-    .catch(() => ({}))) as {
-    idea?: string;
-    answers?: Answer[];
+  const { messages, model } = (await request.json().catch(() => ({}))) as {
+    messages?: ChatMessage[];
     model?: string;
   };
 
-  if (!idea || idea.trim().length < 3) {
-    return new Response("idea required", { status: 400 });
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return new Response("messages required", { status: 400 });
   }
 
   const profile = await getProfile();
-  const prompt = enhancePrompt({
-    profile,
-    idea,
-    answers: Array.isArray(answers) ? answers : [],
-  });
 
   let eng;
   try {
@@ -34,8 +26,8 @@ export async function POST(request: Request) {
     });
   }
 
-  const source = eng.stream(prompt);
-  const stream = toSafeTextStream(source, "enhance");
+  const source = eng.chatStream(roastSystemPrompt(profile), messages);
+  const stream = toSafeTextStream(source, "roast");
 
   return new Response(stream, {
     headers: {

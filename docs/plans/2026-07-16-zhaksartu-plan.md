@@ -288,3 +288,42 @@ paid for and it may be useful later (smaller model, or a real GPU host).
 `CLAUDE_MODEL` env var removed — tiers are fixed in code, not configured
 per-deploy, so there's one source of truth for what "sonnet" or "opus" means
 in this app.
+
+## 11. Local removed entirely; roast mode added (2026-07-17)
+
+**Local fully removed**, not just demoted. `OllamaEngine`, `localHealthy()`,
+`warmLocal()`, `/api/warm`, `.github/workflows/keep-warm.yml`,
+`OLLAMA_URL`/`OLLAMA_MODEL`/`WARM_SECRET`, and the "local (experimental)"
+UI toggle are all deleted — the Railway `ollama` service was deleted too.
+Section 10's "keep it as an option" reasoning didn't survive contact with
+actually using it: dead infra pointing at a service that no longer exists
+is worse than no infra. Revisit only with a genuinely different approach
+(real GPU host, or a much smaller model) if it ever comes up again.
+
+**Roast mode**, the second real (non-ghost) mode alongside `build`: paste a
+plan, get a genuine multi-turn conversation that stress-tests it —
+`lib/prompts.ts` → `roastSystemPrompt()` (funny, blunt, never cruel to the
+person, always ends in 1-3 actionable follow-ups, explicitly told to catch
+plans that contradict the user's own stated standards from the profile).
+Required a real architecture addition: `ClaudeEngine.chatStream(system,
+messages)` in `lib/engines.ts` for proper multi-turn chat (the existing
+`stream(prompt)` was single-message only, now implemented as a thin
+wrapper over `chatStream`); `lib/store.ts` `HistoryEntry` gained a `mode`
+field (old entries backfilled to `"build"` on read) and an `updateHistory()`
+upsert, since a roast conversation grows across many turns instead of
+finishing in one shot — the client creates the history entry after the
+first exchange and PATCHes it after every subsequent one.
+
+**Bug found and fixed during roast-mode testing**: the Claude SDK's stream
+can throw *after* every real token was already delivered (rare
+stream-end edge case). The naive pattern — `controller.close()` on success,
+`controller.enqueue()`/`close()` again in the catch block — throws
+"Controller is already closed" uncaught inside the Route Handler when that
+happens, tearing down the response mid-air (observed live: a completed,
+saved roast reply, followed by the whole page hard-reloading back to
+build/idea, wiping the visible conversation even though it was already
+safely in history). Fixed with a shared, guarded `lib/stream.ts` →
+`toSafeTextStream()` used by both `/api/enhance` and `/api/roast` — every
+controller call is wrapped so a second failure never throws. Verified live
+after the fix: a full roast conversation streamed to completion with the
+UI intact throughout, and the server logged zero errors.

@@ -10,7 +10,8 @@ const HISTORY_CAP = 200;
 export type HistoryEntry = {
   id: string;
   at: string; // ISO timestamp
-  engine: string;
+  mode: "build" | "roast";
+  engine: string; // claude tier id
   idea: string;
   output: string;
 };
@@ -39,10 +40,20 @@ export async function listHistory(): Promise<HistoryEntry[]> {
   try {
     const raw = await fs.readFile(HISTORY_PATH, "utf8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // Backfill entries written before `mode` existed.
+    return parsed.map((e) => ({ mode: "build", ...e }));
   } catch {
     return [];
   }
+}
+
+async function writeHistory(list: HistoryEntry[]): Promise<void> {
+  await fs.writeFile(
+    HISTORY_PATH,
+    JSON.stringify(list.slice(0, HISTORY_CAP), null, 2),
+    "utf8"
+  );
 }
 
 export async function addHistory(
@@ -55,23 +66,24 @@ export async function addHistory(
   };
   const list = await listHistory();
   list.unshift(full);
-  await fs.writeFile(
-    HISTORY_PATH,
-    JSON.stringify(list.slice(0, HISTORY_CAP), null, 2),
-    "utf8"
-  );
+  await writeHistory(list);
   return full;
+}
+
+/** Upserts the output of an in-progress entry — used by roast mode, which
+ * grows across many turns instead of finishing in one shot. */
+export async function updateHistory(
+  id: string,
+  patch: { output: string }
+): Promise<void> {
+  const list = await listHistory();
+  const idx = list.findIndex((e) => e.id === id);
+  if (idx === -1) return;
+  list[idx] = { ...list[idx], output: patch.output };
+  await writeHistory(list);
 }
 
 export async function removeHistory(id: string): Promise<void> {
   const list = await listHistory();
-  await fs.writeFile(
-    HISTORY_PATH,
-    JSON.stringify(
-      list.filter((e) => e.id !== id),
-      null,
-      2
-    ),
-    "utf8"
-  );
+  await writeHistory(list.filter((e) => e.id !== id));
 }

@@ -1,24 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-type Phase = "idea" | "questions" | "output";
-type EngineId = "local" | "claude";
+type Mode = "build" | "roast";
+type BuildPhase = "idea" | "questions" | "output";
+type RoastPhase = "intro" | "chat";
 
 type ClaudeTier = { id: string; label: string; model: string; note: string };
 
 type Health = {
-  local: boolean;
   claude: boolean;
-  localModel: string;
   claudeTiers: ClaudeTier[];
 };
 
 type Extra = { q: string; hint?: string };
+type ChatMsg = { role: "user" | "assistant"; content: string };
 
 type HistoryEntry = {
   id: string;
   at: string;
+  mode: "build" | "roast";
   engine: string;
   idea: string;
   output: string;
@@ -57,6 +58,10 @@ const SKELETON = [
   },
 ] as const;
 
+const REAL_MODES: { id: Mode; label: string }[] = [
+  { id: "build", label: "build" },
+  { id: "roast", label: "roast" },
+];
 const GHOST_MODES = ["write", "image", "general"] as const;
 
 const DOC_CHECK_TEXT =
@@ -64,22 +69,16 @@ const DOC_CHECK_TEXT =
 
 const DEFAULT_TIER = "sonnet";
 
+function buildTranscript(msgs: ChatMsg[]): string {
+  return msgs
+    .map((m) => `${m.role === "user" ? "YOU" : "ROAST"}: ${m.content}`)
+    .join("\n\n");
+}
+
 export default function Home() {
-  const [phase, setPhase] = useState<Phase>("idea");
-  const [idea, setIdea] = useState("");
-  const [extras, setExtras] = useState<Extra[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [docCheck, setDocCheck] = useState(true);
-  const [engine, setEngine] = useState<EngineId>("claude");
+  const [mode, setMode] = useState<Mode>("build");
   const [claudeTier, setClaudeTier] = useState(DEFAULT_TIER);
   const [health, setHealth] = useState<Health | null>(null);
-  const [loadingQuestions, setLoadingQuestions] = useState(false);
-  const [streaming, setStreaming] = useState(false);
-  const [waiting, setWaiting] = useState(false);
-  const [output, setOutput] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [lastEngine, setLastEngine] = useState<EngineId>("claude");
-  const [lastTier, setLastTier] = useState(DEFAULT_TIER);
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [profile, setProfile] = useState("");
@@ -87,7 +86,28 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const outputRef = useRef<HTMLDivElement>(null);
+  // ── Build mode state ──────────────────────────────────────
+  const [phase, setPhase] = useState<BuildPhase>("idea");
+  const [idea, setIdea] = useState("");
+  const [extras, setExtras] = useState<Extra[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [docCheck, setDocCheck] = useState(true);
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [output, setOutput] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [lastTier, setLastTier] = useState(DEFAULT_TIER);
+
+  // ── Roast mode state ──────────────────────────────────────
+  const [roastPhase, setRoastPhase] = useState<RoastPhase>("intro");
+  const [plan, setPlan] = useState("");
+  const [roastMessages, setRoastMessages] = useState<ChatMsg[]>([]);
+  const [roastStreamText, setRoastStreamText] = useState("");
+  const [roastStreaming, setRoastStreaming] = useState(false);
+  const [roastWaiting, setRoastWaiting] = useState(false);
+  const [roastHistoryId, setRoastHistoryId] = useState<string | null>(null);
+  const [roastInput, setRoastInput] = useState("");
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -116,6 +136,8 @@ export default function Home() {
       .catch(() => {});
   }, [refreshHealth, refreshHistory]);
 
+  // ── Build mode logic ──────────────────────────────────────
+
   async function goQuestions() {
     if (idea.trim().length < 3) return;
     setLoadingQuestions(true);
@@ -125,18 +147,13 @@ export default function Home() {
       const res = await fetch("/api/questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          idea,
-          engine,
-          model: engine === "claude" ? claudeTier : undefined,
-        }),
+        body: JSON.stringify({ idea, model: claudeTier }),
       });
       if (res.ok) setExtras((await res.json()).questions ?? []);
     } catch {
       /* extras are optional */
     } finally {
       setLoadingQuestions(false);
-      refreshHealth();
     }
   }
 
@@ -154,7 +171,7 @@ export default function Home() {
     return list;
   }
 
-  async function runEnhance(withEngine: EngineId, withTier: string) {
+  async function runEnhance(withTier: string) {
     if (
       output.trim().length > 0 &&
       !window.confirm(
@@ -168,19 +185,13 @@ export default function Home() {
     setCopied(false);
     setStreaming(true);
     setWaiting(true);
-    setLastEngine(withEngine);
     setLastTier(withTier);
     let text = "";
     try {
       const res = await fetch("/api/enhance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          idea,
-          answers: collectAnswers(),
-          engine: withEngine,
-          model: withEngine === "claude" ? withTier : undefined,
-        }),
+        body: JSON.stringify({ idea, answers: collectAnswers(), model: withTier }),
       });
       if (!res.ok || !res.body) {
         text = `[zhaksartu error] ${await res.text()}`;
@@ -203,11 +214,7 @@ export default function Home() {
         await fetch("/api/history", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            engine: withEngine === "claude" ? withTier : "local",
-            idea,
-            output: text,
-          }),
+          body: JSON.stringify({ mode: "build", engine: withTier, idea, output: text }),
         });
         refreshHistory();
       }
@@ -219,7 +226,6 @@ export default function Home() {
     } finally {
       setStreaming(false);
       setWaiting(false);
-      refreshHealth();
     }
   }
 
@@ -228,6 +234,104 @@ export default function Home() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
+
+  // ── Roast mode logic ──────────────────────────────────────
+
+  async function sendRoastMessage(userText: string) {
+    if (!userText.trim() || roastStreaming) return;
+    const withUser: ChatMsg[] = [...roastMessages, { role: "user", content: userText }];
+    setRoastMessages(withUser);
+    setRoastPhase("chat");
+    setRoastStreamText("");
+    setRoastStreaming(true);
+    setRoastWaiting(true);
+    let text = "";
+    try {
+      const res = await fetch("/api/roast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: withUser, model: claudeTier }),
+      });
+      if (!res.ok || !res.body) {
+        text = `[zhaksartu error] ${await res.text()}`;
+        setRoastMessages([...withUser, { role: "assistant", content: text }]);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) {
+          setRoastWaiting(false);
+          text += chunk;
+          setRoastStreamText(text);
+        }
+      }
+      const finalMsgs: ChatMsg[] = [...withUser, { role: "assistant", content: text }];
+      setRoastMessages(finalMsgs);
+      setRoastStreamText("");
+
+      if (text.trim() && !text.startsWith("[zhaksartu error]")) {
+        const transcript = buildTranscript(finalMsgs);
+        if (!roastHistoryId) {
+          const r = await fetch("/api/history", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "roast",
+              engine: claudeTier,
+              idea: finalMsgs[0].content,
+              output: transcript,
+            }),
+          });
+          if (r.ok) setRoastHistoryId((await r.json()).entry.id);
+        } else {
+          await fetch("/api/history", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: roastHistoryId, output: transcript }),
+          });
+        }
+        refreshHistory();
+      }
+    } catch (err) {
+      setRoastMessages([
+        ...withUser,
+        {
+          role: "assistant",
+          content: `[zhaksartu error] ${err instanceof Error ? err.message : "request failed"}`,
+        },
+      ]);
+    } finally {
+      setRoastStreaming(false);
+      setRoastWaiting(false);
+    }
+  }
+
+  function startRoast() {
+    if (plan.trim().length < 3) return;
+    void sendRoastMessage(plan);
+    setPlan("");
+  }
+
+  function sendRoastReply() {
+    if (!roastInput.trim()) return;
+    const text = roastInput;
+    setRoastInput("");
+    void sendRoastMessage(text);
+  }
+
+  function newRoast() {
+    setRoastPhase("intro");
+    setPlan("");
+    setRoastMessages([]);
+    setRoastStreamText("");
+    setRoastHistoryId(null);
+  }
+
+  // ── Shared ────────────────────────────────────────────────
 
   async function saveProfile() {
     await fetch("/api/profile", {
@@ -249,13 +353,11 @@ export default function Home() {
     setExtras([]);
     setAnswers({});
     setOutput("");
+    newRoast();
   }
 
-  const localAsleep = health !== null && !health.local;
   const lastModelLabel =
-    lastEngine === "claude"
-      ? health?.claudeTiers.find((t) => t.id === lastTier)?.model ?? lastTier
-      : health?.localModel;
+    health?.claudeTiers.find((t) => t.id === lastTier)?.model ?? lastTier;
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 pb-24">
@@ -282,22 +384,38 @@ export default function Home() {
       </header>
 
       {/* ── Model picker ────────────────────────────────────── */}
-      <ModelPicker
-        engine={engine}
-        claudeTier={claudeTier}
-        health={health}
-        onPickClaude={(tier) => {
-          setEngine("claude");
-          setClaudeTier(tier);
-        }}
-        onPickLocal={() => setEngine("local")}
-      />
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        {(health?.claudeTiers ?? []).map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setClaudeTier(t.id)}
+            title={t.note}
+            className={`rounded-[2px] border px-2.5 py-1 font-mono text-xs transition-colors ${
+              claudeTier === t.id
+                ? "border-navy bg-navy text-paper"
+                : "border-hairline text-ink-muted hover:border-navy hover:text-ink"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
       {/* ── Modes ───────────────────────────────────────────── */}
       <div className="mt-4 flex items-center gap-2">
-        <span className="rounded-[2px] bg-navy px-2.5 py-1 font-mono text-xs text-paper">
-          build
-        </span>
+        {REAL_MODES.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setMode(m.id)}
+            className={`rounded-[2px] px-2.5 py-1 font-mono text-xs transition-colors ${
+              mode === m.id
+                ? "bg-navy text-paper"
+                : "border border-hairline text-ink-muted hover:border-navy hover:text-ink"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
         {GHOST_MODES.map((m) => (
           <span
             key={m}
@@ -309,8 +427,8 @@ export default function Home() {
         ))}
       </div>
 
-      {/* ── Phase: idea ─────────────────────────────────────── */}
-      {phase === "idea" && (
+      {/* ═══════════════════ BUILD MODE ═══════════════════════ */}
+      {mode === "build" && phase === "idea" && (
         <main className="mt-10">
           <h1 className="font-serif text-3xl leading-snug text-ink">
             Paste your raw idea.{" "}
@@ -339,8 +457,7 @@ export default function Home() {
         </main>
       )}
 
-      {/* ── Phase: questions ────────────────────────────────── */}
-      {phase === "questions" && (
+      {mode === "build" && phase === "questions" && (
         <main className="mt-10">
           <h1 className="font-serif text-3xl text-ink">Sharpen it.</h1>
           <p className="mt-2 text-sm text-ink-muted">
@@ -375,9 +492,7 @@ export default function Home() {
 
             {loadingQuestions && (
               <p className="animate-pulse-soft font-mono text-xs text-ink-muted">
-                {localAsleep && engine === "local"
-                  ? "waking the local model — this can take a few minutes on Railway's CPU tier…"
-                  : "thinking of idea-specific questions…"}
+                thinking of idea-specific questions…
               </p>
             )}
 
@@ -403,7 +518,7 @@ export default function Home() {
               ← back to idea
             </button>
             <button
-              onClick={() => runEnhance(engine, claudeTier)}
+              onClick={() => runEnhance(claudeTier)}
               className="rounded-[2px] bg-navy px-5 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover"
             >
               Generate prompt →
@@ -412,8 +527,7 @@ export default function Home() {
         </main>
       )}
 
-      {/* ── Phase: output ───────────────────────────────────── */}
-      {phase === "output" && (
+      {mode === "build" && phase === "output" && (
         <main className="mt-10">
           <div className="flex items-baseline justify-between">
             <h1 className="font-serif text-3xl text-ink">Your prompt.</h1>
@@ -424,16 +538,11 @@ export default function Home() {
 
           {waiting && (
             <p className="mt-6 animate-pulse-soft font-mono text-xs text-ink-muted">
-              {lastEngine === "local" && localAsleep
-                ? "waking the local model — this can take a few minutes on Railway's CPU tier…"
-                : "starting…"}
+              starting…
             </p>
           )}
 
-          <div
-            ref={outputRef}
-            className="relative mt-6 rounded-[4px] border border-hairline bg-paper-2 shadow-[0_24px_48px_-24px_rgba(0,26,85,0.18)]"
-          >
+          <div className="relative mt-6 rounded-[4px] border border-hairline bg-paper-2 shadow-[0_24px_48px_-24px_rgba(0,26,85,0.18)]">
             <button
               onClick={copyOutput}
               disabled={!output || streaming}
@@ -449,21 +558,12 @@ export default function Home() {
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => runEnhance(lastEngine, lastTier)}
+              onClick={() => runEnhance(lastTier)}
               disabled={streaming}
               className="rounded-[2px] border border-hairline px-4 py-2 text-sm text-ink transition-colors hover:border-navy disabled:opacity-40"
             >
               Regenerate
             </button>
-            {lastEngine === "local" && health?.claude && (
-              <button
-                onClick={() => runEnhance("claude", DEFAULT_TIER)}
-                disabled={streaming}
-                className="rounded-[2px] border border-navy px-4 py-2 text-sm text-navy transition-colors hover:bg-navy hover:text-paper disabled:opacity-40"
-              >
-                Switch to Claude
-              </button>
-            )}
             <button
               onClick={() => setPhase("questions")}
               disabled={streaming}
@@ -477,6 +577,102 @@ export default function Home() {
               className="text-sm text-ink-muted hover:text-ink disabled:opacity-40"
             >
               start over
+            </button>
+          </div>
+        </main>
+      )}
+
+      {/* ═══════════════════ ROAST MODE ═══════════════════════ */}
+      {mode === "roast" && roastPhase === "intro" && (
+        <main className="mt-10">
+          <h1 className="font-serif text-3xl leading-snug text-ink">
+            Paste the plan. <em className="text-ink-muted">Get roasted.</em>
+          </h1>
+          <p className="mt-2 text-sm text-ink-muted">
+            No idea is good until it's stress-tested. This finds what
+            breaks — real weak points, actionable, not just hedging.
+          </p>
+          <textarea
+            value={plan}
+            onChange={(e) => setPlan(e.target.value)}
+            rows={8}
+            autoFocus
+            placeholder="e.g. the plan I'm about to build, warts and all…"
+            className="mt-6 w-full resize-y rounded-[2px] border border-hairline bg-paper-2 p-4 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-muted/60 focus:border-navy"
+          />
+          <div className="mt-4 flex justify-end">
+            <button
+              onClick={startRoast}
+              disabled={plan.trim().length < 3}
+              className="rounded-[2px] bg-navy px-5 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
+            >
+              Roast it →
+            </button>
+          </div>
+        </main>
+      )}
+
+      {mode === "roast" && roastPhase === "chat" && (
+        <main className="mt-10">
+          <div className="flex items-baseline justify-between">
+            <h1 className="font-serif text-3xl text-ink">Roast.</h1>
+            <span className="font-mono text-xs text-ink-muted">
+              {health?.claudeTiers.find((t) => t.id === claudeTier)?.model}
+            </span>
+          </div>
+
+          <div className="mt-6 space-y-4">
+            {roastMessages.map((m, i) => (
+              <RoastBubble key={i} role={m.role} content={m.content} />
+            ))}
+            {roastStreaming && (
+              <RoastBubble
+                role="assistant"
+                content={
+                  roastWaiting
+                    ? ""
+                    : roastStreamText
+                }
+                streaming
+              />
+            )}
+            {roastWaiting && roastStreaming && (
+              <p className="animate-pulse-soft font-mono text-xs text-ink-muted">
+                roasting…
+              </p>
+            )}
+          </div>
+
+          <div className="mt-6 flex items-end gap-3 border-t border-hairline pt-5">
+            <textarea
+              value={roastInput}
+              onChange={(e) => setRoastInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  sendRoastReply();
+                }
+              }}
+              rows={2}
+              disabled={roastStreaming}
+              placeholder="Push back, answer a point, or ask it to go harder…"
+              className="flex-1 resize-y rounded-[2px] border border-hairline bg-paper-2 p-3 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted/50 focus:border-navy disabled:opacity-60"
+            />
+            <button
+              onClick={sendRoastReply}
+              disabled={roastStreaming || !roastInput.trim()}
+              className="rounded-[2px] bg-navy px-4 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
+            >
+              Send
+            </button>
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              onClick={newRoast}
+              disabled={roastStreaming}
+              className="text-sm text-ink-muted hover:text-ink disabled:opacity-40"
+            >
+              new roast
             </button>
           </div>
         </main>
@@ -504,8 +700,8 @@ export default function Home() {
           </button>
         </div>
         <p className="mt-1 text-xs text-ink-muted">
-          Injected into every enhancement. Edit it and every future prompt
-          fits you better.
+          Injected into both modes. Edit it and every future result fits you
+          better.
         </p>
         <textarea
           value={profile}
@@ -539,7 +735,7 @@ export default function Home() {
               >
                 <span className="truncate text-xs text-ink">{h.idea}</span>
                 <span className="shrink-0 font-mono text-[10px] text-ink-muted">
-                  {new Date(h.at).toLocaleDateString()} · {h.engine}
+                  {new Date(h.at).toLocaleDateString()} · {h.mode} · {h.engine}
                 </span>
               </button>
               {expanded === h.id && (
@@ -571,62 +767,31 @@ export default function Home() {
   );
 }
 
-function ModelPicker({
-  engine,
-  claudeTier,
-  health,
-  onPickClaude,
-  onPickLocal,
+function RoastBubble({
+  role,
+  content,
+  streaming,
 }: {
-  engine: EngineId;
-  claudeTier: string;
-  health: Health | null;
-  onPickClaude: (tier: string) => void;
-  onPickLocal: () => void;
+  role: "user" | "assistant";
+  content: string;
+  streaming?: boolean;
 }) {
-  const tiers = health?.claudeTiers ?? [];
-  const localDot =
-    health === null ? "bg-hairline" : health.local ? "bg-emerald-600" : "bg-spot-amber";
-
+  const isUser = role === "user";
   return (
-    <div className="mt-6 flex flex-wrap items-center gap-2">
-      {tiers.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => onPickClaude(t.id)}
-          title={t.note}
-          className={`rounded-[2px] border px-2.5 py-1 font-mono text-xs transition-colors ${
-            engine === "claude" && claudeTier === t.id
-              ? "border-navy bg-navy text-paper"
-              : "border-hairline text-ink-muted hover:border-navy hover:text-ink"
-          }`}
-        >
-          {t.label}
-        </button>
-      ))}
-
-      {health && (
-        <button
-          onClick={onPickLocal}
-          title={
-            health.local
-              ? "Local model on Railway (experimental — CPU inference is slow)"
-              : "Local model is asleep or unreachable. Experimental: CPU inference on Railway can take minutes."
-          }
-          className={`flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1 font-mono text-xs transition-colors ${
-            engine === "local"
-              ? "border-navy bg-navy text-paper"
-              : "border-hairline text-ink-muted hover:border-navy hover:text-ink"
-          }`}
-        >
-          <span
-            className={`inline-block h-1.5 w-1.5 rounded-full ${
-              engine === "local" ? "bg-paper" : localDot
-            } ${health && !health.local ? "animate-pulse-soft" : ""}`}
-          />
-          local (experimental, slow)
-        </button>
-      )}
+    <div
+      className={`rounded-[4px] border p-4 ${
+        isUser
+          ? "border-hairline bg-paper"
+          : "border-hairline bg-paper-2 shadow-[0_16px_32px_-20px_rgba(0,26,85,0.15)]"
+      }`}
+    >
+      <div className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
+        {isUser ? "you" : "roast"}
+      </div>
+      <div className="mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">
+        {content}
+        {streaming && <span className="animate-pulse-soft">▌</span>}
+      </div>
     </div>
   );
 }
