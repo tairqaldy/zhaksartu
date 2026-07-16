@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { claudeAvailable, engineInfo, localHealthy } from "@/lib/engines";
+import { CLAUDE_TIERS, claudeAvailable, engineInfo, localHealthy } from "@/lib/engines";
 
 export async function GET() {
   const local = await localHealthy();
@@ -7,6 +7,6 @@ export async function GET() {
     local,
     claude: claudeAvailable(),
     localModel: engineInfo.localModel,
-    claudeModel: engineInfo.claudeModel,
+    claudeTiers: CLAUDE_TIERS,
   });
 }

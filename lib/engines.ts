@@ -12,7 +12,28 @@ export interface EnhanceEngine {
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3.5:4b";
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? "claude-opus-4-8";
+
+/**
+ * Local (Ollama, CPU-only on Railway) turned out too slow for real use —
+ * multi-second-per-token generation, plus Railway's own edge proxy kills a
+ * connection that goes too long without a byte, so long CPU decodes 502
+ * before finishing. It stays available as an honest "experimental / slow"
+ * option; Claude tiers are the primary engines.
+ */
+export const CLAUDE_TIERS = [
+  { id: "haiku", label: "haiku", model: "claude-haiku-4-5", note: "fast, cheap" },
+  { id: "sonnet", label: "sonnet", model: "claude-sonnet-5", note: "balanced — default" },
+  { id: "opus", label: "opus", model: "claude-opus-4-8", note: "best quality" },
+  { id: "fable", label: "fable", model: "claude-fable-5", note: "top-tier, priciest" },
+] as const;
+
+export type ClaudeTierId = (typeof CLAUDE_TIERS)[number]["id"];
+const DEFAULT_TIER: ClaudeTierId = "sonnet";
+
+function resolveClaudeModel(tierId: string | undefined): string {
+  const tier = CLAUDE_TIERS.find((t) => t.id === tierId);
+  return (tier ?? CLAUDE_TIERS.find((t) => t.id === DEFAULT_TIER)!).model;
+}
 
 function stripThink(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "");
@@ -32,12 +53,10 @@ class OllamaEngine implements EnhanceEngine {
   }
 
   async complete(prompt: string): Promise<string> {
-    // Generous timeout: first request after app sleeping loads the model.
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: this.body(prompt, false, 0.3),
-      // CPU inference + cold model load can be very slow; give it room.
       signal: AbortSignal.timeout(420_000),
     });
     if (!res.ok) throw new Error(`ollama responded ${res.status}`);
@@ -50,8 +69,6 @@ class OllamaEngine implements EnhanceEngine {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: this.body(prompt, true, 0.45),
-      // Whole-stream cap: prompt eval on CPU can take minutes before the
-      // first token, and generation itself runs at single-digit tok/s.
       signal: AbortSignal.timeout(900_000),
     });
     if (!res.ok || !res.body) throw new Error(`ollama responded ${res.status}`);
@@ -77,7 +94,6 @@ class OllamaEngine implements EnhanceEngine {
           continue;
         }
         if (!content) continue;
-        // Belt-and-suspenders: suppress <think> spans even though think:false
         if (inThink) {
           const end = content.indexOf("</think>");
           if (end === -1) continue;
@@ -104,10 +120,28 @@ class OllamaEngine implements EnhanceEngine {
 class ClaudeEngine implements EnhanceEngine {
   id = "claude" as const;
   private client = new Anthropic();
+  private isFable: boolean;
+
+  constructor(private model: string) {
+    this.isFable = model === "claude-fable-5";
+  }
 
   async complete(prompt: string): Promise<string> {
+    if (this.isFable) {
+      const msg = await this.client.beta.messages.create({
+        model: this.model,
+        max_tokens: 2048,
+        betas: ["server-side-fallback-2026-06-01"],
+        fallbacks: [{ model: "claude-opus-4-8" }],
+        messages: [{ role: "user", content: prompt }],
+      });
+      return msg.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+    }
     const msg = await this.client.messages.create({
-      model: CLAUDE_MODEL,
+      model: this.model,
       max_tokens: 2048,
       messages: [{ role: "user", content: prompt }],
     });
@@ -118,11 +152,19 @@ class ClaudeEngine implements EnhanceEngine {
   }
 
   async *stream(prompt: string): AsyncIterable<string> {
-    const stream = this.client.messages.stream({
-      model: CLAUDE_MODEL,
-      max_tokens: 8192,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const stream = this.isFable
+      ? this.client.beta.messages.stream({
+          model: this.model,
+          max_tokens: 8192,
+          betas: ["server-side-fallback-2026-06-01"],
+          fallbacks: [{ model: "claude-opus-4-8" }],
+          messages: [{ role: "user", content: prompt }],
+        })
+      : this.client.messages.stream({
+          model: this.model,
+          max_tokens: 8192,
+          messages: [{ role: "user", content: prompt }],
+        });
     for await (const event of stream) {
       if (
         event.type === "content_block_delta" &&
@@ -138,12 +180,12 @@ export function claudeAvailable(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
 
-export function getEngine(id: string | undefined): EnhanceEngine {
+export function getEngine(id: string | undefined, claudeTier?: string): EnhanceEngine {
   if (id === "claude") {
     if (!claudeAvailable()) {
       throw new Error("Claude engine requested but ANTHROPIC_API_KEY is not set");
     }
-    return new ClaudeEngine();
+    return new ClaudeEngine(resolveClaudeModel(claudeTier));
   }
   return new OllamaEngine();
 }
@@ -201,5 +243,5 @@ export async function warmLocal(): Promise<{
 
 export const engineInfo = {
   localModel: OLLAMA_MODEL,
-  claudeModel: CLAUDE_MODEL,
+  defaultClaudeModel: resolveClaudeModel(DEFAULT_TIER),
 };

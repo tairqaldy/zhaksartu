@@ -5,12 +5,13 @@ import { getProfile } from "@/lib/store";
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  const { idea, answers, engine } = (await request
+  const { idea, answers, engine, model } = (await request
     .json()
     .catch(() => ({}))) as {
     idea?: string;
     answers?: Answer[];
     engine?: string;
+    model?: string;
   };
 
   if (!idea || idea.trim().length < 3) {
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
 
   let eng;
   try {
-    eng = getEngine(engine);
+    eng = getEngine(engine, model);
   } catch (err) {
     return new Response(err instanceof Error ? err.message : "engine error", {
       status: 400,

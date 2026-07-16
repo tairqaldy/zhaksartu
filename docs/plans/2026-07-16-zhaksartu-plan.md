@@ -259,3 +259,32 @@ Truth worth stating: at personal usage volume, the Claude API path is *cheaper* 
 - **Next 16 reality check:** `middleware.ts` is deprecated in Next 16 → the auth gate lives in `proxy.ts` (verified against `node_modules/next/dist/docs`).
 - **Model tag verified:** `qwen3.5:4b` exists on ollama.com; it is a thinking model → requests send `think: false` and the stream strips `<think>` spans defensively.
 - **Phase-1 A/B (Qwen vs Phi-4-mini) deferred to prod:** the user won't run models locally, so the comparison happens on Railway after deploy by swapping `OLLAMA_MODEL`.
+
+## 10. Architecture pivot: local demoted, Claude tiers primary (2026-07-16, night)
+
+Prod testing surfaced two compounding, structural problems with local CPU
+inference on Railway — not code bugs, a hardware/platform mismatch:
+
+1. **`mmap = false` on Railway volumes.** Every wake from App Sleeping forces
+   a full model re-read off disk plus CPU weight repacking — a multi-minute
+   cold start, not the ~30s originally assumed. Mitigated (not solved) with
+   `/api/warm` (own secret, `WARM_SECRET`) and a scheduled GitHub Action
+   (`.github/workflows/keep-warm.yml`) that keeps it resident during work
+   hours.
+2. **Single-digit-seconds-per-token generation**, even once warm. Confirmed
+   live: a real enhancement completed but took minutes, and a second attempt
+   hit a Railway edge-proxy 502 (`Application failed to respond`) — the
+   platform's own idle-connection timeout firing on a token gap, independent
+   of any timeout in our code.
+
+Decision: **Claude becomes the primary and default engine**, exposed as four
+selectable tiers (`lib/engines.ts` → `CLAUDE_TIERS`): Haiku 4.5 (fast/cheap),
+Sonnet 5 (default), Opus 4.8 (best quality), Fable 5 (top-tier, priciest —
+wired with the recommended server-side refusal fallback to Opus 4.8 per the
+Claude API skill). Local stays deployed and selectable, relabeled
+"experimental, slow" in the UI, rather than removed — the infra is already
+paid for and it may be useful later (smaller model, or a real GPU host).
+
+`CLAUDE_MODEL` env var removed — tiers are fixed in code, not configured
+per-deploy, so there's one source of truth for what "sonnet" or "opus" means
+in this app.

@@ -5,11 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type Phase = "idea" | "questions" | "output";
 type EngineId = "local" | "claude";
 
+type ClaudeTier = { id: string; label: string; model: string; note: string };
+
 type Health = {
   local: boolean;
   claude: boolean;
   localModel: string;
-  claudeModel: string;
+  claudeTiers: ClaudeTier[];
 };
 
 type Extra = { q: string; hint?: string };
@@ -60,20 +62,24 @@ const GHOST_MODES = ["write", "image", "general"] as const;
 const DOC_CHECK_TEXT =
   "Instruct the builder AI to consult current documentation (context7, node_modules docs, official changelogs) for exact API shapes and versions instead of trusting its training data, and to say so when docs contradict its assumptions.";
 
+const DEFAULT_TIER = "sonnet";
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("idea");
   const [idea, setIdea] = useState("");
   const [extras, setExtras] = useState<Extra[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [docCheck, setDocCheck] = useState(true);
-  const [engine, setEngine] = useState<EngineId>("local");
+  const [engine, setEngine] = useState<EngineId>("claude");
+  const [claudeTier, setClaudeTier] = useState(DEFAULT_TIER);
   const [health, setHealth] = useState<Health | null>(null);
   const [loadingQuestions, setLoadingQuestions] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const [output, setOutput] = useState("");
   const [copied, setCopied] = useState(false);
-  const [lastEngine, setLastEngine] = useState<EngineId>("local");
+  const [lastEngine, setLastEngine] = useState<EngineId>("claude");
+  const [lastTier, setLastTier] = useState(DEFAULT_TIER);
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [profile, setProfile] = useState("");
@@ -119,7 +125,11 @@ export default function Home() {
       const res = await fetch("/api/questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idea, engine }),
+        body: JSON.stringify({
+          idea,
+          engine,
+          model: engine === "claude" ? claudeTier : undefined,
+        }),
       });
       if (res.ok) setExtras((await res.json()).questions ?? []);
     } catch {
@@ -144,7 +154,7 @@ export default function Home() {
     return list;
   }
 
-  async function runEnhance(withEngine: EngineId) {
+  async function runEnhance(withEngine: EngineId, withTier: string) {
     if (
       output.trim().length > 0 &&
       !window.confirm(
@@ -159,12 +169,18 @@ export default function Home() {
     setStreaming(true);
     setWaiting(true);
     setLastEngine(withEngine);
+    setLastTier(withTier);
     let text = "";
     try {
       const res = await fetch("/api/enhance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idea, answers: collectAnswers(), engine: withEngine }),
+        body: JSON.stringify({
+          idea,
+          answers: collectAnswers(),
+          engine: withEngine,
+          model: withEngine === "claude" ? withTier : undefined,
+        }),
       });
       if (!res.ok || !res.body) {
         text = `[zhaksartu error] ${await res.text()}`;
@@ -187,7 +203,11 @@ export default function Home() {
         await fetch("/api/history", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ engine: withEngine, idea, output: text }),
+          body: JSON.stringify({
+            engine: withEngine === "claude" ? withTier : "local",
+            idea,
+            output: text,
+          }),
         });
         refreshHistory();
       }
@@ -232,6 +252,10 @@ export default function Home() {
   }
 
   const localAsleep = health !== null && !health.local;
+  const lastModelLabel =
+    lastEngine === "claude"
+      ? health?.claudeTiers.find((t) => t.id === lastTier)?.model ?? lastTier
+      : health?.localModel;
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 pb-24">
@@ -249,23 +273,28 @@ export default function Home() {
             жақсарту · to improve
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <EngineChip
-            engine={engine}
-            health={health}
-            onSwitch={(e) => setEngine(e)}
-          />
-          <button
-            onClick={() => setPanelOpen(true)}
-            className="rounded-[2px] border border-hairline px-3 py-1.5 text-xs text-ink transition-colors hover:border-navy"
-          >
-            profile
-          </button>
-        </div>
+        <button
+          onClick={() => setPanelOpen(true)}
+          className="rounded-[2px] border border-hairline px-3 py-1.5 text-xs text-ink transition-colors hover:border-navy"
+        >
+          profile
+        </button>
       </header>
 
+      {/* ── Model picker ────────────────────────────────────── */}
+      <ModelPicker
+        engine={engine}
+        claudeTier={claudeTier}
+        health={health}
+        onPickClaude={(tier) => {
+          setEngine("claude");
+          setClaudeTier(tier);
+        }}
+        onPickLocal={() => setEngine("local")}
+      />
+
       {/* ── Modes ───────────────────────────────────────────── */}
-      <div className="mt-6 flex items-center gap-2">
+      <div className="mt-4 flex items-center gap-2">
         <span className="rounded-[2px] bg-navy px-2.5 py-1 font-mono text-xs text-paper">
           build
         </span>
@@ -347,7 +376,7 @@ export default function Home() {
             {loadingQuestions && (
               <p className="animate-pulse-soft font-mono text-xs text-ink-muted">
                 {localAsleep && engine === "local"
-                  ? "waking the local model — this first call can take a minute…"
+                  ? "waking the local model — this can take a few minutes on Railway's CPU tier…"
                   : "thinking of idea-specific questions…"}
               </p>
             )}
@@ -374,7 +403,7 @@ export default function Home() {
               ← back to idea
             </button>
             <button
-              onClick={() => runEnhance(engine)}
+              onClick={() => runEnhance(engine, claudeTier)}
               className="rounded-[2px] bg-navy px-5 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover"
             >
               Generate prompt →
@@ -389,16 +418,14 @@ export default function Home() {
           <div className="flex items-baseline justify-between">
             <h1 className="font-serif text-3xl text-ink">Your prompt.</h1>
             <span className="font-mono text-xs text-ink-muted">
-              {lastEngine === "claude"
-                ? health?.claudeModel
-                : health?.localModel}
+              {lastModelLabel}
             </span>
           </div>
 
           {waiting && (
             <p className="mt-6 animate-pulse-soft font-mono text-xs text-ink-muted">
               {lastEngine === "local" && localAsleep
-                ? "waking the local model — first token can take a minute on cold start…"
+                ? "waking the local model — this can take a few minutes on Railway's CPU tier…"
                 : "starting…"}
             </p>
           )}
@@ -422,7 +449,7 @@ export default function Home() {
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => runEnhance(lastEngine)}
+              onClick={() => runEnhance(lastEngine, lastTier)}
               disabled={streaming}
               className="rounded-[2px] border border-hairline px-4 py-2 text-sm text-ink transition-colors hover:border-navy disabled:opacity-40"
             >
@@ -430,11 +457,11 @@ export default function Home() {
             </button>
             {lastEngine === "local" && health?.claude && (
               <button
-                onClick={() => runEnhance("claude")}
+                onClick={() => runEnhance("claude", DEFAULT_TIER)}
                 disabled={streaming}
                 className="rounded-[2px] border border-navy px-4 py-2 text-sm text-navy transition-colors hover:bg-navy hover:text-paper disabled:opacity-40"
               >
-                Escalate to Claude
+                Switch to Claude
               </button>
             )}
             <button
@@ -544,46 +571,60 @@ export default function Home() {
   );
 }
 
-function EngineChip({
+function ModelPicker({
   engine,
+  claudeTier,
   health,
-  onSwitch,
+  onPickClaude,
+  onPickLocal,
 }: {
   engine: EngineId;
+  claudeTier: string;
   health: Health | null;
-  onSwitch: (e: EngineId) => void;
+  onPickClaude: (tier: string) => void;
+  onPickLocal: () => void;
 }) {
+  const tiers = health?.claudeTiers ?? [];
   const localDot =
     health === null ? "bg-hairline" : health.local ? "bg-emerald-600" : "bg-spot-amber";
+
   return (
-    <div className="flex items-center rounded-[2px] border border-hairline font-mono text-xs">
-      <button
-        onClick={() => onSwitch("local")}
-        title={
-          health && !health.local
-            ? "Local model is sleeping — it wakes on the first request."
-            : "Local model on Railway"
-        }
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 ${
-          engine === "local" ? "bg-paper-2 text-ink" : "text-ink-muted"
-        }`}
-      >
-        <span
-          className={`inline-block h-1.5 w-1.5 rounded-full ${localDot} ${
-            health && !health.local ? "animate-pulse-soft" : ""
-          }`}
-        />
-        local
-      </button>
-      {health?.claude && (
+    <div className="mt-6 flex flex-wrap items-center gap-2">
+      {tiers.map((t) => (
         <button
-          onClick={() => onSwitch("claude")}
-          title="Claude API"
-          className={`border-l border-hairline px-2.5 py-1.5 ${
-            engine === "claude" ? "bg-paper-2 text-ink" : "text-ink-muted"
+          key={t.id}
+          onClick={() => onPickClaude(t.id)}
+          title={t.note}
+          className={`rounded-[2px] border px-2.5 py-1 font-mono text-xs transition-colors ${
+            engine === "claude" && claudeTier === t.id
+              ? "border-navy bg-navy text-paper"
+              : "border-hairline text-ink-muted hover:border-navy hover:text-ink"
           }`}
         >
-          claude
+          {t.label}
+        </button>
+      ))}
+
+      {health && (
+        <button
+          onClick={onPickLocal}
+          title={
+            health.local
+              ? "Local model on Railway (experimental — CPU inference is slow)"
+              : "Local model is asleep or unreachable. Experimental: CPU inference on Railway can take minutes."
+          }
+          className={`flex items-center gap-1.5 rounded-[2px] border px-2.5 py-1 font-mono text-xs transition-colors ${
+            engine === "local"
+              ? "border-navy bg-navy text-paper"
+              : "border-hairline text-ink-muted hover:border-navy hover:text-ink"
+          }`}
+        >
+          <span
+            className={`inline-block h-1.5 w-1.5 rounded-full ${
+              engine === "local" ? "bg-paper" : localDot
+            } ${health && !health.local ? "animate-pulse-soft" : ""}`}
+          />
+          local (experimental, slow)
         </button>
       )}
     </div>

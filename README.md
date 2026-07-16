@@ -7,8 +7,8 @@ A self-hosted, cloud-deployed, personal prompt enhancer. You paste a raw, messy 
 ## Why this exists
 
 1. **Save tokens on plan writing and research.** The expensive part of working with AI builders is re-explaining your taste, stack, and standards every time. Here that lives in an editable profile that gets injected into every enhancement.
-2. **Privacy when it matters.** The default engine is a small open model (Qwen3.5 4B) running on my own Railway service — sensitive ideas never leave infrastructure I control. A per-request "Escalate to Claude" button exists for when quality beats privacy.
-3. **High-quality prompts for "free\*".** \*Free after the server bill; the model service sleeps when idle, so it costs active minutes only — the price is a ~30–60s cold start on the first request.
+2. **A model for the moment.** Four Claude tiers (Haiku 4.5 → Sonnet 5 → Opus 4.8 → Fable 5) are one click apart — cheap and fast for a quick pass, top-tier when the idea deserves it. Cost per enhancement ranges from a fraction of a cent to a few cents.
+3. **A private, self-hosted option exists too.** A small open model (Qwen3.5 4B) runs on my own Railway service, sleeping when idle. It's there for when privacy beats speed — currently labeled "experimental" because CPU-only inference on Railway (see below) is slow enough that Claude is the practical default.
 
 Two deliberate features born from real pain:
 
@@ -25,7 +25,7 @@ raw idea ──► fixed questions (goal / scope / design / tech / constraints)
                       <working_agreements> <open_decisions> <verification>
 ```
 
-- **Engines:** `local` (Ollama + Qwen3.5 4B, CPU, private networking) by default; `claude` (Anthropic API) as an optional escalation.
+- **Engines:** `claude` (Anthropic API, four selectable tiers) by default; `local` (Ollama + Qwen3.5 4B, CPU, private networking) as an experimental, clearly-labeled option — see "Local model reality check" below.
 - **Profile:** one editable markdown document (design language, copy voice, implementation defaults) injected into every enhancement.
 - **Auth:** a single passcode → signed cookie. This is a single-user tool.
 - **Storage:** profile + history as plain files on a Railway volume. No database.
@@ -52,21 +52,37 @@ This repo is the deploy source. In a Railway project:
   - `OLLAMA_URL=http://ollama.railway.internal:11434`
   - `OLLAMA_MODEL=qwen3.5:4b`
   - `DATA_DIR=/data`
-  - `ANTHROPIC_API_KEY` — optional; enables the Claude engine. **Set it here, never in the repo.**
-  - `CLAUDE_MODEL=claude-opus-4-8` (or `claude-haiku-4-5` for pennies).
-  - `WARM_SECRET` — optional; enables `/api/warm` (see below). Any random string.
+  - `ANTHROPIC_API_KEY` — required to enable the Claude tiers (haiku/sonnet/opus/fable), which are the primary engine. **Set it here, never in the repo.**
+  - `WARM_SECRET` — optional; enables `/api/warm` for the local model (see below). Any random string.
 - Generate a public domain, then add the custom domain.
 
 **3. Domain (`zhaksartu.xyz`, DNS on Vercel)**
 - Railway: `web` service → Settings → Networking → Custom Domain → `zhaksartu.xyz` → copy the CNAME target Railway shows.
 - Vercel dashboard → Domains → `zhaksartu.xyz` → DNS records → add an **ALIAS** record (not CNAME — Vercel rejects CNAME at the apex) with **Name `@`**, **Value** the Railway target.
 
-## Keeping the local model warm
+## Local model reality check
 
-Railway volumes don't support `mmap`, so every time the `ollama` service
-wakes from App Sleeping it has to read the whole model off disk and repack
-weights for CPU — a multi-minute cold start, not the ~30s originally
-assumed. Two ways to deal with that:
+The local engine is real and deployed, but in practice CPU-only inference
+on Railway's shared compute is too slow for interactive use — single-digit
+seconds *per token*, not per response. Two compounding problems:
+
+1. **Railway volumes don't support `mmap`**, so every time the `ollama`
+   service wakes from App Sleeping it has to read the whole model off disk
+   and repack weights for CPU — a multi-minute cold start, not the ~30s
+   originally assumed.
+2. **Railway's own edge proxy times out a connection that goes too long
+   without a byte.** A slow-enough token gap gets the request killed with a
+   502 (`Application failed to respond`) before it ever reaches the app's
+   own (already generous) timeouts.
+
+Claude is the default and recommended engine for exactly this reason. Local
+stays available, clearly labeled "experimental, slow" in the UI, for anyone
+who wants to try it or extend it later (a smaller model, a different host
+with real GPU access, etc.).
+
+### Keeping the local model warm (if you use it anyway)
+
+Two ways to reduce the cold-start pain:
 
 - **Wake it by hand, anytime:** `curl -H "x-warm-secret: $WARM_SECRET" https://zhaksartu.xyz/api/warm`
   Returns once the model is resident (`alreadyLoaded: true` if it already was — near-instant).
