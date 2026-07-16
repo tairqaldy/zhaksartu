@@ -37,7 +37,8 @@ class OllamaEngine implements EnhanceEngine {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: this.body(prompt, false, 0.3),
-      signal: AbortSignal.timeout(180_000),
+      // CPU inference + cold model load can be very slow; give it room.
+      signal: AbortSignal.timeout(420_000),
     });
     if (!res.ok) throw new Error(`ollama responded ${res.status}`);
     const data = (await res.json()) as { message?: { content?: string } };
@@ -49,7 +50,9 @@ class OllamaEngine implements EnhanceEngine {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: this.body(prompt, true, 0.45),
-      signal: AbortSignal.timeout(300_000),
+      // Whole-stream cap: prompt eval on CPU can take minutes before the
+      // first token, and generation itself runs at single-digit tok/s.
+      signal: AbortSignal.timeout(900_000),
     });
     if (!res.ok || !res.body) throw new Error(`ollama responded ${res.status}`);
 
