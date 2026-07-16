@@ -159,6 +159,46 @@ export async function localHealthy(): Promise<boolean> {
   }
 }
 
+/**
+ * Forces the model into memory so the next real request is fast, instead of
+ * paying the cold-load penalty (container wake + full weight read, since
+ * Railway volumes don't support mmap) on a user-facing call. Cheap no-op if
+ * the model is already resident.
+ */
+export async function warmLocal(): Promise<{
+  alreadyLoaded: boolean;
+  ms: number;
+}> {
+  const start = Date.now();
+  try {
+    const psRes = await fetch(`${OLLAMA_URL}/api/ps`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (psRes.ok) {
+      const data = (await psRes.json()) as { models?: { model?: string }[] };
+      const loaded = (data.models ?? []).some((m) => m.model === OLLAMA_MODEL);
+      if (loaded) return { alreadyLoaded: true, ms: Date.now() - start };
+    }
+  } catch {
+    // container may still be waking up; fall through to the forcing call
+  }
+
+  await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+      stream: false,
+      think: false,
+      messages: [{ role: "user", content: "hi" }],
+      options: { num_predict: 1 },
+      keep_alive: "30m",
+    }),
+    signal: AbortSignal.timeout(420_000),
+  });
+  return { alreadyLoaded: false, ms: Date.now() - start };
+}
+
 export const engineInfo = {
   localModel: OLLAMA_MODEL,
   claudeModel: CLAUDE_MODEL,

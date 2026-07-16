@@ -1,0 +1,26 @@
+name: keep-warm
+
+# Pings /api/warm every few minutes during work hours so the ollama service
+# never idles long enough for Railway's App Sleeping to kick in — no
+# multi-minute cold-load penalty on the first request of the day.
+#
+# GitHub Actions cron runs in UTC. The schedule below targets roughly
+# 09:00-18:00 in a UTC+2 timezone (07:00-16:00 UTC) — adjust the two
+# numbers in each cron expression if your local offset differs.
+#
+# You can also trigger this manually any time (Actions tab -> keep-warm ->
+# "Run workflow"), or just curl the endpoint yourself — see README.
+
+on:
+  schedule:
+    - cron: "*/5 7-15 * * 1-5" # every 5 min, Mon-Fri, 07:00-15:55 UTC
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/warm
+        run: |
+          curl -sf -H "x-warm-secret: ${{ secrets.WARM_SECRET }}" \
+            "${{ vars.APP_URL }}/api/warm"

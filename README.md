@@ -54,11 +54,32 @@ This repo is the deploy source. In a Railway project:
   - `DATA_DIR=/data`
   - `ANTHROPIC_API_KEY` — optional; enables the Claude engine. **Set it here, never in the repo.**
   - `CLAUDE_MODEL=claude-opus-4-8` (or `claude-haiku-4-5` for pennies).
+  - `WARM_SECRET` — optional; enables `/api/warm` (see below). Any random string.
 - Generate a public domain, then add the custom domain.
 
 **3. Domain (`zhaksartu.xyz`, DNS on Vercel)**
 - Railway: `web` service → Settings → Networking → Custom Domain → `zhaksartu.xyz` → copy the CNAME target Railway shows.
-- Vercel dashboard → Domains → `zhaksartu.xyz` → DNS records → add `CNAME @ <railway-target>` (Vercel DNS flattens apex CNAMEs) — or use `www` and redirect the apex.
+- Vercel dashboard → Domains → `zhaksartu.xyz` → DNS records → add an **ALIAS** record (not CNAME — Vercel rejects CNAME at the apex) with **Name `@`**, **Value** the Railway target.
+
+## Keeping the local model warm
+
+Railway volumes don't support `mmap`, so every time the `ollama` service
+wakes from App Sleeping it has to read the whole model off disk and repack
+weights for CPU — a multi-minute cold start, not the ~30s originally
+assumed. Two ways to deal with that:
+
+- **Wake it by hand, anytime:** `curl -H "x-warm-secret: $WARM_SECRET" https://zhaksartu.xyz/api/warm`
+  Returns once the model is resident (`alreadyLoaded: true` if it already was — near-instant).
+- **Keep it warm automatically during work hours:** `.github/workflows/keep-warm.yml`
+  pings that endpoint every 5 minutes on a schedule, which keeps Railway's
+  idle timer from ever firing in that window — outside it, the service
+  sleeps normally. To enable it:
+  1. Repo → Settings → Secrets and variables → Actions → **New repository secret** → `WARM_SECRET` → same value as on Railway.
+  2. Same page → **Variables** tab → **New repository variable** → `APP_URL` → `https://zhaksartu.xyz`.
+  3. The cron in the workflow assumes UTC+2; edit the two hour numbers in `.github/workflows/keep-warm.yml` if your timezone differs.
+
+This doesn't make cold starts free — it just confines the expensive one to
+the first ping of the morning instead of your first real request.
 
 ## Local dev
 

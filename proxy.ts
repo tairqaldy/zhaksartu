@@ -4,8 +4,15 @@ import { AUTH_COOKIE, authToken } from "@/lib/auth";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // The gate itself and the auth endpoint stay reachable
-  if (pathname === "/gate" || pathname === "/api/auth") {
+  // The gate, the auth endpoint, and the warm-up pinger stay reachable.
+  // /api/warm has its own secret (WARM_SECRET) checked inside the route —
+  // it is not protected by the passcode cookie so an external scheduler
+  // can call it directly.
+  if (
+    pathname === "/gate" ||
+    pathname === "/api/auth" ||
+    pathname === "/api/warm"
+  ) {
     return NextResponse.next();
   }
 
