@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useChatMode, type ChatModeState } from "@/lib/useChatMode";
 
 type Mode = "build" | "roast" | "market";
@@ -68,6 +70,28 @@ const DOC_CHECK_TEXT =
   "Instruct the builder AI to consult current documentation (context7, node_modules docs, official changelogs) for exact API shapes and versions instead of trusting its training data, and to say so when docs contradict its assumptions.";
 
 const DEFAULT_TIER = "sonnet";
+
+/** Clipboard write that survives blocked/unfocused clipboard API. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>("build");
@@ -218,9 +242,10 @@ export default function Home() {
   }
 
   async function copyOutput() {
-    await navigator.clipboard.writeText(output);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (await copyText(output)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   // ── Shared ────────────────────────────────────────────────
@@ -581,7 +606,7 @@ export default function Home() {
                   </pre>
                   <div className="mt-2 flex gap-3">
                     <button
-                      onClick={() => navigator.clipboard.writeText(h.output)}
+                      onClick={() => void copyText(h.output)}
                       className="font-mono text-[11px] text-navy hover:underline"
                     >
                       copy
@@ -638,6 +663,34 @@ function ChatModeView({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [chat.messages, chat.streamText]);
+
+  function download(ext: "md" | "txt") {
+    const date = new Date().toISOString().slice(0, 10);
+    const body =
+      ext === "md"
+        ? `# zhaksartu · ${aiLabel} · ${date}\n\n` +
+          chat.messages
+            .map(
+              (m) =>
+                `### ${m.role === "user" ? youLabel : aiLabel}\n\n${m.content}`
+            )
+            .join("\n\n---\n\n")
+        : chat.messages
+            .map(
+              (m) =>
+                `${(m.role === "user" ? youLabel : aiLabel).toUpperCase()}:\n${m.content}`
+            )
+            .join("\n\n----------------\n\n");
+    const blob = new Blob([body], {
+      type: ext === "md" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `zhaksartu-${aiLabel}-${date}.${ext}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   if (chat.phase === "intro") {
     return (
@@ -727,7 +780,7 @@ function ChatModeView({
           Send
         </button>
       </div>
-      <div className="mt-3">
+      <div className="mt-3 flex items-center gap-4">
         <button
           onClick={chat.reset}
           disabled={chat.streaming}
@@ -735,10 +788,79 @@ function ChatModeView({
         >
           {resetLabel}
         </button>
+        <button
+          onClick={() => download("md")}
+          disabled={chat.streaming || chat.messages.length === 0}
+          className="font-mono text-xs text-ink-muted hover:text-navy disabled:opacity-40"
+        >
+          export .md
+        </button>
+        <button
+          onClick={() => download("txt")}
+          disabled={chat.streaming || chat.messages.length === 0}
+          className="font-mono text-xs text-ink-muted hover:text-navy disabled:opacity-40"
+        >
+          export .txt
+        </button>
       </div>
     </main>
   );
 }
+
+/** Markdown element styling for assistant messages — paper system, quiet. */
+const MD_COMPONENTS = {
+  p: (p: React.ComponentProps<"p">) => (
+    <p className="my-2 first:mt-0 last:mb-0" {...p} />
+  ),
+  h1: (p: React.ComponentProps<"h1">) => (
+    <p className="mb-1.5 mt-4 text-[15px] font-semibold text-ink first:mt-0" {...p} />
+  ),
+  h2: (p: React.ComponentProps<"h2">) => (
+    <p className="mb-1.5 mt-4 text-[15px] font-semibold text-ink first:mt-0" {...p} />
+  ),
+  h3: (p: React.ComponentProps<"h3">) => (
+    <p className="mb-1 mt-3 text-[14px] font-semibold text-ink first:mt-0" {...p} />
+  ),
+  h4: (p: React.ComponentProps<"h4">) => (
+    <p className="mb-1 mt-3 text-[14px] font-semibold text-ink first:mt-0" {...p} />
+  ),
+  ul: (p: React.ComponentProps<"ul">) => (
+    <ul className="my-2 list-disc space-y-1 pl-5" {...p} />
+  ),
+  ol: (p: React.ComponentProps<"ol">) => (
+    <ol className="my-2 list-decimal space-y-1 pl-5" {...p} />
+  ),
+  blockquote: (p: React.ComponentProps<"blockquote">) => (
+    <blockquote className="my-2 border-l-2 border-hairline pl-3 text-ink-muted" {...p} />
+  ),
+  code: (p: React.ComponentProps<"code">) => (
+    <code
+      className="rounded-[2px] border border-hairline bg-paper px-1 py-px font-mono text-[12px]"
+      {...p}
+    />
+  ),
+  pre: (p: React.ComponentProps<"pre">) => (
+    <pre
+      className="my-2 overflow-x-auto rounded-[2px] border border-hairline bg-paper p-3 font-mono text-[12px] leading-relaxed [&_code]:border-0 [&_code]:bg-transparent [&_code]:p-0"
+      {...p}
+    />
+  ),
+  a: (p: React.ComponentProps<"a">) => (
+    <a className="text-navy underline" target="_blank" rel="noreferrer" {...p} />
+  ),
+  hr: () => <hr className="my-3 border-hairline" />,
+  table: (p: React.ComponentProps<"table">) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="border-collapse text-[13px]" {...p} />
+    </div>
+  ),
+  th: (p: React.ComponentProps<"th">) => (
+    <th className="border border-hairline px-2 py-1 text-left font-semibold" {...p} />
+  ),
+  td: (p: React.ComponentProps<"td">) => (
+    <td className="border border-hairline px-2 py-1 align-top" {...p} />
+  ),
+};
 
 function ChatBubble({
   role,
@@ -754,6 +876,15 @@ function ChatBubble({
   streaming?: boolean;
 }) {
   const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+
+  async function copyMessage() {
+    if (await copyText(content)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }
+
   return (
     <div
       className={`rounded-[4px] border p-4 ${
@@ -762,13 +893,31 @@ function ChatBubble({
           : "border-hairline bg-paper-2 shadow-[0_16px_32px_-20px_rgba(0,26,85,0.15)]"
       }`}
     >
-      <div className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
-        {isUser ? youLabel : aiLabel}
+      <div className="flex items-baseline justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
+          {isUser ? youLabel : aiLabel}
+        </span>
+        {!streaming && content.length > 0 && (
+          <button
+            onClick={copyMessage}
+            className="font-mono text-[10px] text-ink-muted transition-colors hover:text-navy"
+          >
+            {copied ? "copied ✓" : "copy"}
+          </button>
+        )}
       </div>
-      <div className="mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">
-        {content}
-        {streaming && <span className="animate-pulse-soft">▌</span>}
-      </div>
+      {isUser ? (
+        <div className="mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">
+          {content}
+        </div>
+      ) : (
+        <div className="mt-1.5 text-[14px] leading-relaxed text-ink">
+          <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+            {content}
+          </Markdown>
+          {streaming && <span className="animate-pulse-soft">▌</span>}
+        </div>
+      )}
     </div>
   );
 }
