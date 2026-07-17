@@ -1,16 +1,23 @@
 import { getClaudeEngine, type ChatMessage } from "@/lib/engines";
-import { roastSystemPrompt } from "@/lib/prompts";
+import { CHAT_PERSONAS } from "@/lib/prompts";
 import { getProfile } from "@/lib/store";
 import { toSafeTextStream } from "@/lib/stream";
 
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
-  const { messages, model } = (await request.json().catch(() => ({}))) as {
+  const { persona, messages, model } = (await request
+    .json()
+    .catch(() => ({}))) as {
+    persona?: string;
     messages?: ChatMessage[];
     model?: string;
   };
 
+  if (!persona || !CHAT_PERSONAS[persona]) {
+    return new Response("unknown persona", { status: 400 });
+  }
+  const buildSystem = CHAT_PERSONAS[persona];
   if (!Array.isArray(messages) || messages.length === 0) {
     return new Response("messages required", { status: 400 });
   }
@@ -26,8 +33,8 @@ export async function POST(request: Request) {
     });
   }
 
-  const source = eng.chatStream(roastSystemPrompt(profile), messages);
-  const stream = toSafeTextStream(source, "roast");
+  const source = eng.chatStream(buildSystem(profile), messages);
+  const stream = toSafeTextStream(source, persona);
 
   return new Response(stream, {
     headers: {

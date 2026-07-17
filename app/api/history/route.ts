@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "idea and output required" }, { status: 400 });
   }
   const entry = await addHistory({
-    mode: mode === "roast" ? "roast" : "build",
+    mode: mode || "build",
     engine: engine ?? "sonnet",
     idea: idea.slice(0, 500),
     output,

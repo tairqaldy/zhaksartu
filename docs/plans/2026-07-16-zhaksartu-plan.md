@@ -327,3 +327,57 @@ safely in history). Fixed with a shared, guarded `lib/stream.ts` →
 controller call is wrapped so a second failure never throws. Verified live
 after the fix: a full roast conversation streamed to completion with the
 UI intact throughout, and the server logged zero errors.
+
+## 12. Market mode; chat architecture unified; scroll fix (2026-07-17)
+
+**Chat modes are now a pattern, not a one-off.** With a second chat mode
+arriving (market) and more planned, roast's plumbing was generalized:
+
+- `/api/roast` → **`/api/chat`** taking a `persona` id, resolved through
+  `lib/prompts.ts` → `CHAT_PERSONAS` (persona id → system-prompt builder).
+  Adding a future chat mode = one prompt function + one entry in that map +
+  one `<ChatModeView>` block in the page.
+- Client side: `lib/useChatMode.ts` — shared hook owning the whole
+  conversation lifecycle (intro → multi-turn chat, streaming, error
+  handling, history create-then-PATCH autosave). Roast and market are two
+  instances of it.
+- `HistoryEntry.mode` widened from a union to `string` (persona ids).
+
+**Market mode** — strict, expert-toned go-to-market conversation. The
+system prompt is deliberately opinionated: grounded in Rory Sutherland's
+psycho-logic (humans buy meaning/status/framing, not rational utility;
+psychological solutions often beat practical ones; hunt the counterintuitive
+move because pure logic converges and cancels out) plus startup
+distribution canon (April Dunford positioning, wedge/beachhead, aspirin vs
+vitamin, unscalable early tactics, pricing psychology, retention as the
+real growth engine). Told to ask for missing specifics instead of
+generic-planning around them, to push back on weak marketing thinking
+(e.g. "we'll go viral"), and to end every turn with something to decide or
+test cheaply. User contribution is explicitly treated as domain knowledge
+to build on — the accumulation-of-knowledge stance the user asked for.
+
+**Scroll fix**: chat conversations no longer grow the page unboundedly.
+`<ChatModeView>` renders messages inside a bounded (`max-h-[60vh]`)
+internally-scrollable panel that auto-scrolls to the newest message on
+every stream tick; the input stays put beneath it.
+
+**Ghost slots**: `write`/`image`/`general` chips replaced by a single
+`storytelling` chip — the user's own concept (make a brand/product/idea
+"feel alive and breathe" through narrative) and the one future mode
+actually committed to. Other candidate modes live in this doc, not the UI:
+- `storytelling` — origin story, narrative arc, brand voice, the
+  characters (maker, user, problem); Sutherland-adjacent (stories carry
+  psychological value the way framing does). Committed, not yet designed.
+- `name` — naming things (products, features, companies) with real
+  criteria: memorability, pronounceability across languages, domain/handle
+  availability instincts, semantic distance from competitors.
+- `write` — long-form writing partner in the user's own no-hype voice
+  (READMEs, launch posts, docs) with the profile as style guide.
+- `pitch` — compress an idea into 30s / 2min / one-pager forms; natural
+  bridge between roast (survives scrutiny) and market (positioned).
+- `interview` — user-research question designer + mock-interview
+  roleplay: practice discovery conversations before talking to real users
+  (Mom-Test-style: past behavior, not hypothetical praise).
+- `image` — prompt enhancement for image/video models; different template
+  (subject/style/lighting/composition), same build-mode skeleton idea.
+- `general` — catch-all enhancement without the dev-specific skeleton.

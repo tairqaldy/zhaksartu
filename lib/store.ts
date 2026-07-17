@@ -10,7 +10,7 @@ const HISTORY_CAP = 200;
 export type HistoryEntry = {
   id: string;
   at: string; // ISO timestamp
-  mode: "build" | "roast";
+  mode: string; // "build" or a chat persona id (roast, market, ...)
   engine: string; // claude tier id
   idea: string;
   output: string;

@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useChatMode, type ChatModeState } from "@/lib/useChatMode";
 
-type Mode = "build" | "roast";
+type Mode = "build" | "roast" | "market";
 type BuildPhase = "idea" | "questions" | "output";
-type RoastPhase = "intro" | "chat";
 
 type ClaudeTier = { id: string; label: string; model: string; note: string };
 
@@ -14,12 +14,11 @@ type Health = {
 };
 
 type Extra = { q: string; hint?: string };
-type ChatMsg = { role: "user" | "assistant"; content: string };
 
 type HistoryEntry = {
   id: string;
   at: string;
-  mode: "build" | "roast";
+  mode: string;
   engine: string;
   idea: string;
   output: string;
@@ -61,19 +60,14 @@ const SKELETON = [
 const REAL_MODES: { id: Mode; label: string }[] = [
   { id: "build", label: "build" },
   { id: "roast", label: "roast" },
+  { id: "market", label: "market" },
 ];
-const GHOST_MODES = ["write", "image", "general"] as const;
+const GHOST_MODES = ["storytelling"] as const;
 
 const DOC_CHECK_TEXT =
   "Instruct the builder AI to consult current documentation (context7, node_modules docs, official changelogs) for exact API shapes and versions instead of trusting its training data, and to say so when docs contradict its assumptions.";
 
 const DEFAULT_TIER = "sonnet";
-
-function buildTranscript(msgs: ChatMsg[]): string {
-  return msgs
-    .map((m) => `${m.role === "user" ? "YOU" : "ROAST"}: ${m.content}`)
-    .join("\n\n");
-}
 
 export default function Home() {
   const [mode, setMode] = useState<Mode>("build");
@@ -85,6 +79,15 @@ export default function Home() {
   const [profileDirty, setProfileDirty] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const res = await fetch("/api/history");
+      if (res.ok) setHistory((await res.json()).history ?? []);
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
 
   // ── Build mode state ──────────────────────────────────────
   const [phase, setPhase] = useState<BuildPhase>("idea");
@@ -99,15 +102,9 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
   const [lastTier, setLastTier] = useState(DEFAULT_TIER);
 
-  // ── Roast mode state ──────────────────────────────────────
-  const [roastPhase, setRoastPhase] = useState<RoastPhase>("intro");
-  const [plan, setPlan] = useState("");
-  const [roastMessages, setRoastMessages] = useState<ChatMsg[]>([]);
-  const [roastStreamText, setRoastStreamText] = useState("");
-  const [roastStreaming, setRoastStreaming] = useState(false);
-  const [roastWaiting, setRoastWaiting] = useState(false);
-  const [roastHistoryId, setRoastHistoryId] = useState<string | null>(null);
-  const [roastInput, setRoastInput] = useState("");
+  // ── Chat modes ────────────────────────────────────────────
+  const roast = useChatMode("roast", claudeTier, refreshHistory);
+  const market = useChatMode("market", claudeTier, refreshHistory);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -115,15 +112,6 @@ export default function Home() {
       if (res.ok) setHealth(await res.json());
     } catch {
       /* keep last known */
-    }
-  }, []);
-
-  const refreshHistory = useCallback(async () => {
-    try {
-      const res = await fetch("/api/history");
-      if (res.ok) setHistory((await res.json()).history ?? []);
-    } catch {
-      /* non-fatal */
     }
   }, []);
 
@@ -235,102 +223,6 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  // ── Roast mode logic ──────────────────────────────────────
-
-  async function sendRoastMessage(userText: string) {
-    if (!userText.trim() || roastStreaming) return;
-    const withUser: ChatMsg[] = [...roastMessages, { role: "user", content: userText }];
-    setRoastMessages(withUser);
-    setRoastPhase("chat");
-    setRoastStreamText("");
-    setRoastStreaming(true);
-    setRoastWaiting(true);
-    let text = "";
-    try {
-      const res = await fetch("/api/roast", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: withUser, model: claudeTier }),
-      });
-      if (!res.ok || !res.body) {
-        text = `[zhaksartu error] ${await res.text()}`;
-        setRoastMessages([...withUser, { role: "assistant", content: text }]);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        if (chunk) {
-          setRoastWaiting(false);
-          text += chunk;
-          setRoastStreamText(text);
-        }
-      }
-      const finalMsgs: ChatMsg[] = [...withUser, { role: "assistant", content: text }];
-      setRoastMessages(finalMsgs);
-      setRoastStreamText("");
-
-      if (text.trim() && !text.startsWith("[zhaksartu error]")) {
-        const transcript = buildTranscript(finalMsgs);
-        if (!roastHistoryId) {
-          const r = await fetch("/api/history", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "roast",
-              engine: claudeTier,
-              idea: finalMsgs[0].content,
-              output: transcript,
-            }),
-          });
-          if (r.ok) setRoastHistoryId((await r.json()).entry.id);
-        } else {
-          await fetch("/api/history", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: roastHistoryId, output: transcript }),
-          });
-        }
-        refreshHistory();
-      }
-    } catch (err) {
-      setRoastMessages([
-        ...withUser,
-        {
-          role: "assistant",
-          content: `[zhaksartu error] ${err instanceof Error ? err.message : "request failed"}`,
-        },
-      ]);
-    } finally {
-      setRoastStreaming(false);
-      setRoastWaiting(false);
-    }
-  }
-
-  function startRoast() {
-    if (plan.trim().length < 3) return;
-    void sendRoastMessage(plan);
-    setPlan("");
-  }
-
-  function sendRoastReply() {
-    if (!roastInput.trim()) return;
-    const text = roastInput;
-    setRoastInput("");
-    void sendRoastMessage(text);
-  }
-
-  function newRoast() {
-    setRoastPhase("intro");
-    setPlan("");
-    setRoastMessages([]);
-    setRoastStreamText("");
-    setRoastHistoryId(null);
-  }
-
   // ── Shared ────────────────────────────────────────────────
 
   async function saveProfile() {
@@ -353,11 +245,13 @@ export default function Home() {
     setExtras([]);
     setAnswers({});
     setOutput("");
-    newRoast();
+    roast.reset();
+    market.reset();
   }
 
   const lastModelLabel =
     health?.claudeTiers.find((t) => t.id === lastTier)?.model ?? lastTier;
+  const currentModel = health?.claudeTiers.find((t) => t.id === claudeTier)?.model;
 
   return (
     <div className="mx-auto w-full max-w-2xl flex-1 px-6 pb-24">
@@ -583,99 +477,41 @@ export default function Home() {
       )}
 
       {/* ═══════════════════ ROAST MODE ═══════════════════════ */}
-      {mode === "roast" && roastPhase === "intro" && (
-        <main className="mt-10">
-          <h1 className="font-serif text-3xl leading-snug text-ink">
-            Paste the plan. <em className="text-ink-muted">Get roasted.</em>
-          </h1>
-          <p className="mt-2 text-sm text-ink-muted">
-            No idea is good until it's stress-tested. This finds what
-            breaks — real weak points, actionable, not just hedging.
-          </p>
-          <textarea
-            value={plan}
-            onChange={(e) => setPlan(e.target.value)}
-            rows={8}
-            autoFocus
-            placeholder="e.g. the plan I'm about to build, warts and all…"
-            className="mt-6 w-full resize-y rounded-[2px] border border-hairline bg-paper-2 p-4 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-muted/60 focus:border-navy"
-          />
-          <div className="mt-4 flex justify-end">
-            <button
-              onClick={startRoast}
-              disabled={plan.trim().length < 3}
-              className="rounded-[2px] bg-navy px-5 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
-            >
-              Roast it →
-            </button>
-          </div>
-        </main>
+      {mode === "roast" && (
+        <ChatModeView
+          chat={roast}
+          modelLabel={currentModel}
+          title="Paste the plan."
+          titleEm="Get roasted."
+          subtitle="No idea is good until it's stress-tested. This finds what breaks — real weak points, actionable, not just hedging."
+          placeholder="e.g. the plan I'm about to build, warts and all…"
+          startCta="Roast it →"
+          chatTitle="Roast."
+          youLabel="you"
+          aiLabel="roast"
+          replyPlaceholder="Push back, answer a point, or ask it to go harder…"
+          resetLabel="new roast"
+          waitingLabel="roasting…"
+        />
       )}
 
-      {mode === "roast" && roastPhase === "chat" && (
-        <main className="mt-10">
-          <div className="flex items-baseline justify-between">
-            <h1 className="font-serif text-3xl text-ink">Roast.</h1>
-            <span className="font-mono text-xs text-ink-muted">
-              {health?.claudeTiers.find((t) => t.id === claudeTier)?.model}
-            </span>
-          </div>
-
-          <div className="mt-6 space-y-4">
-            {roastMessages.map((m, i) => (
-              <RoastBubble key={i} role={m.role} content={m.content} />
-            ))}
-            {roastStreaming && (
-              <RoastBubble
-                role="assistant"
-                content={
-                  roastWaiting
-                    ? ""
-                    : roastStreamText
-                }
-                streaming
-              />
-            )}
-            {roastWaiting && roastStreaming && (
-              <p className="animate-pulse-soft font-mono text-xs text-ink-muted">
-                roasting…
-              </p>
-            )}
-          </div>
-
-          <div className="mt-6 flex items-end gap-3 border-t border-hairline pt-5">
-            <textarea
-              value={roastInput}
-              onChange={(e) => setRoastInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  sendRoastReply();
-                }
-              }}
-              rows={2}
-              disabled={roastStreaming}
-              placeholder="Push back, answer a point, or ask it to go harder…"
-              className="flex-1 resize-y rounded-[2px] border border-hairline bg-paper-2 p-3 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted/50 focus:border-navy disabled:opacity-60"
-            />
-            <button
-              onClick={sendRoastReply}
-              disabled={roastStreaming || !roastInput.trim()}
-              className="rounded-[2px] bg-navy px-4 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
-            >
-              Send
-            </button>
-          </div>
-          <div className="mt-3 flex items-center gap-3">
-            <button
-              onClick={newRoast}
-              disabled={roastStreaming}
-              className="text-sm text-ink-muted hover:text-ink disabled:opacity-40"
-            >
-              new roast
-            </button>
-          </div>
-        </main>
+      {/* ═══════════════════ MARKET MODE ══════════════════════ */}
+      {mode === "market" && (
+        <ChatModeView
+          chat={market}
+          modelLabel={currentModel}
+          title="Paste the product."
+          titleEm="Get a go-to-market plan."
+          subtitle="A real, specific strategy — positioning, wedge, the first channel worth betting on, and what to test cheaply before spending real money."
+          placeholder="e.g. what it is, who it's for, what's been tried so far…"
+          startCta="Build the plan →"
+          chatTitle="Market."
+          youLabel="you"
+          aiLabel="market"
+          replyPlaceholder="Add detail, push back, or ask for the next step…"
+          resetLabel="new plan"
+          waitingLabel="thinking…"
+        />
       )}
 
       {/* ── Profile & history drawer ────────────────────────── */}
@@ -700,7 +536,7 @@ export default function Home() {
           </button>
         </div>
         <p className="mt-1 text-xs text-ink-muted">
-          Injected into both modes. Edit it and every future result fits you
+          Injected into every mode. Edit it and every future result fits you
           better.
         </p>
         <textarea
@@ -767,13 +603,154 @@ export default function Home() {
   );
 }
 
-function RoastBubble({
+function ChatModeView({
+  chat,
+  modelLabel,
+  title,
+  titleEm,
+  subtitle,
+  placeholder,
+  startCta,
+  chatTitle,
+  youLabel,
+  aiLabel,
+  replyPlaceholder,
+  resetLabel,
+  waitingLabel,
+}: {
+  chat: ChatModeState;
+  modelLabel?: string;
+  title: string;
+  titleEm: string;
+  subtitle: string;
+  placeholder: string;
+  startCta: string;
+  chatTitle: string;
+  youLabel: string;
+  aiLabel: string;
+  replyPlaceholder: string;
+  resetLabel: string;
+  waitingLabel: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chat.messages, chat.streamText]);
+
+  if (chat.phase === "intro") {
+    return (
+      <main className="mt-10">
+        <h1 className="font-serif text-3xl leading-snug text-ink">
+          {title} <em className="text-ink-muted">{titleEm}</em>
+        </h1>
+        <p className="mt-2 text-sm text-ink-muted">{subtitle}</p>
+        <textarea
+          value={chat.intro}
+          onChange={(e) => chat.setIntro(e.target.value)}
+          rows={8}
+          autoFocus
+          placeholder={placeholder}
+          className="mt-6 w-full resize-y rounded-[2px] border border-hairline bg-paper-2 p-4 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-muted/60 focus:border-navy"
+        />
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={chat.start}
+            disabled={chat.intro.trim().length < 3}
+            className="rounded-[2px] bg-navy px-5 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
+          >
+            {startCta}
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mt-10">
+      <div className="flex items-baseline justify-between">
+        <h1 className="font-serif text-3xl text-ink">{chatTitle}</h1>
+        <span className="font-mono text-xs text-ink-muted">{modelLabel}</span>
+      </div>
+
+      {/* Bounded, internally-scrollable panel — the page itself stays put,
+          only this panel scrolls, and it auto-scrolls to the newest turn. */}
+      <div
+        ref={scrollRef}
+        className="mt-6 max-h-[60vh] min-h-[16rem] space-y-4 overflow-y-auto rounded-[4px] border border-hairline bg-paper p-4"
+      >
+        {chat.messages.map((m, i) => (
+          <ChatBubble
+            key={i}
+            role={m.role}
+            content={m.content}
+            youLabel={youLabel}
+            aiLabel={aiLabel}
+          />
+        ))}
+        {chat.streaming && (
+          <ChatBubble
+            role="assistant"
+            content={chat.waiting ? "" : chat.streamText}
+            aiLabel={aiLabel}
+            streaming
+          />
+        )}
+        {chat.waiting && chat.streaming && (
+          <p className="animate-pulse-soft font-mono text-xs text-ink-muted">
+            {waitingLabel}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 flex items-end gap-3">
+        <textarea
+          value={chat.input}
+          onChange={(e) => chat.setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              chat.reply();
+            }
+          }}
+          rows={2}
+          disabled={chat.streaming}
+          placeholder={replyPlaceholder}
+          className="flex-1 resize-y rounded-[2px] border border-hairline bg-paper-2 p-3 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted/50 focus:border-navy disabled:opacity-60"
+        />
+        <button
+          onClick={chat.reply}
+          disabled={chat.streaming || !chat.input.trim()}
+          className="rounded-[2px] bg-navy px-4 py-2.5 text-sm font-medium text-paper transition-colors hover:bg-navy-hover disabled:opacity-40"
+        >
+          Send
+        </button>
+      </div>
+      <div className="mt-3">
+        <button
+          onClick={chat.reset}
+          disabled={chat.streaming}
+          className="text-sm text-ink-muted hover:text-ink disabled:opacity-40"
+        >
+          {resetLabel}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+function ChatBubble({
   role,
   content,
+  youLabel = "you",
+  aiLabel,
   streaming,
 }: {
   role: "user" | "assistant";
   content: string;
+  youLabel?: string;
+  aiLabel: string;
   streaming?: boolean;
 }) {
   const isUser = role === "user";
@@ -786,7 +763,7 @@ function RoastBubble({
       }`}
     >
       <div className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
-        {isUser ? "you" : "roast"}
+        {isUser ? youLabel : aiLabel}
       </div>
       <div className="mt-1.5 whitespace-pre-wrap text-[14px] leading-relaxed text-ink">
         {content}
