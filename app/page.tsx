@@ -5,7 +5,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChatMode, type ChatModeState } from "@/lib/useChatMode";
 
-type Mode = "build" | "roast" | "market";
+type Mode = "build" | "roast" | "market" | "storytelling";
 type BuildPhase = "idea" | "questions" | "output";
 
 type ClaudeTier = { id: string; label: string; model: string; note: string };
@@ -63,8 +63,19 @@ const REAL_MODES: { id: Mode; label: string }[] = [
   { id: "build", label: "build" },
   { id: "roast", label: "roast" },
   { id: "market", label: "market" },
+  { id: "storytelling", label: "storytelling" },
 ];
-const GHOST_MODES = ["storytelling"] as const;
+const GHOST_MODES = [] as const;
+
+const MODE_DESCRIPTIONS: Record<Mode, string> = {
+  build: "Turn a raw idea into a structured prompt ready for a coding AI",
+  roast:
+    "Stress-test your plan before you build — find the holes while it's cheap",
+  market:
+    "Build a real go-to-market strategy grounded in frameworks, not vibes",
+  storytelling:
+    "Find the emotional truth in your product, pitch, reel, or idea — before you write a word",
+};
 
 const DOC_CHECK_TEXT =
   "Instruct the builder AI to consult current documentation (context7, node_modules docs, official changelogs) for exact API shapes and versions instead of trusting its training data, and to say so when docs contradict its assumptions.";
@@ -129,6 +140,7 @@ export default function Home() {
   // ── Chat modes ────────────────────────────────────────────
   const roast = useChatMode("roast", claudeTier, refreshHistory);
   const market = useChatMode("market", claudeTier, refreshHistory);
+  const storytelling = useChatMode("storytelling", claudeTier, refreshHistory);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -272,6 +284,7 @@ export default function Home() {
     setOutput("");
     roast.reset();
     market.reset();
+    storytelling.reset();
   }
 
   const lastModelLabel =
@@ -345,6 +358,7 @@ export default function Home() {
           </span>
         ))}
       </div>
+      <p className="mt-2 text-xs text-ink-muted">{MODE_DESCRIPTIONS[mode]}</p>
 
       {/* ═══════════════════ BUILD MODE ═══════════════════════ */}
       {mode === "build" && phase === "idea" && (
@@ -536,6 +550,25 @@ export default function Home() {
           replyPlaceholder="Add detail, push back, or ask for the next step…"
           resetLabel="new plan"
           waitingLabel="thinking…"
+        />
+      )}
+
+      {/* ═══════════════════ STORYTELLING MODE ════════════════ */}
+      {mode === "storytelling" && (
+        <ChatModeView
+          chat={storytelling}
+          modelLabel={currentModel}
+          title="Bring the idea."
+          titleEm="Find the story."
+          subtitle="No draft until the bones are solid. A director's conversation that won't settle for generic emotion — the specific person, the specific moment, the real stakes."
+          placeholder="e.g. the product, the pitch, the topic, the origin — whatever needs its story found…"
+          startCta="Start →"
+          chatTitle="Storytelling."
+          youLabel="you"
+          aiLabel="director"
+          replyPlaceholder="Answer the question, push back, or go deeper…"
+          resetLabel="new story"
+          waitingLabel="watching the scene…"
         />
       )}
 
